@@ -1,0 +1,54 @@
+name: Trello Integration
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    types: [opened, closed]
+
+jobs:
+  update-trello:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get commit message
+        id: getmsg
+        run: |
+          echo "commit_msg<<EOF" >> $GITHUB_ENV
+          echo "${{ github.event.head_commit && github.event.head_commit.message || '' }}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Extract Trello Card ID from commit message
+        id: extract
+        run: |
+          COMMIT_MSG="${{ env.commit_msg }}"
+          # On cherche le pattern [TRELLO-<id>]
+          CARD_ID=$(echo "$COMMIT_MSG" | grep -oP '\[TRELLO-\K[^\]]+' || echo "")
+          echo "card_id=$CARD_ID" >> $GITHUB_OUTPUT
+
+      - name: Add comment to Trello card
+        if: steps.extract.outputs.card_id != ''
+        run: |
+          CARD=${{ steps.extract.outputs.card_id }}
+          curl -s -X POST "https://api.trello.com/1/cards/${CARD}/actions/comments" \
+            -d "key=${{ secrets.TRELLO_API_KEY }}" \
+            -d "token=${{ secrets.TRELLO_TOKEN }}" \
+            -d "text=Commit poussé par ${{ github.actor }}%0A${{ env.commit_msg }}%0A${{ github.event.head_commit.url }}" \
+            || echo "Failed to post comment"
+
+      - name: Move card to EN REVUE (when pushed to main)
+        if: ${{ github.ref == 'refs/heads/main' && steps.extract.outputs.card_id != '' }}
+        run: |
+          CARD=${{ steps.extract.outputs.card_id }}
+          curl -s -X PUT "https://api.trello.com/1/cards/${CARD}" \
+            -d "key=${{ secrets.TRELLO_API_KEY }}" \
+            -d "token=${{ secrets.TRELLO_TOKEN }}" \
+            -d "idList=${{ secrets.TRELLO_LIST_EN_REVUE }}" \
+            || echo "Failed to move card"
+
+      - name: Send Slack notification (optional)
+        if: ${{ github.ref == 'refs/heads/main' && steps.extract.outputs.card_id != '' && secrets.SLACK_BOT_TOKEN != '' }}
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel-id: C0A1JAS4KRP   # Remplace par ton channel ID (voir instructions ci-dessous)
+          slack-message: "La carte Trello <https://trello.com/c/${{ steps.extract.outputs.card_id }}|EN REVUE> vient d'arriver en revue !"
